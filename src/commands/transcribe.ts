@@ -1,5 +1,6 @@
 import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
+import { Agent } from 'undici'
 import {
   isAudioFile,
   getAudioDuration,
@@ -14,6 +15,12 @@ import {
   OPENAI_API_KEY_URL,
 } from '../config.ts'
 import type { TranscribeOptions, TranscriptionResponse, VTTCue, AudioChunk } from '../types.ts'
+
+// Configure undici to disable timeouts for long-running transcription requests
+globalThis[Symbol.for('undici.globalDispatcher.1')] = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+})
 
 export default async function transcribe (args: string[]): Promise<void> {
   const options = parseArgs(args)
@@ -163,49 +170,96 @@ async function transcribeChunk (chunk: AudioChunk, apiKey: string, language: str
   const audioData = await readFile(chunk.file)
 
   const formData = new FormData()
-  const blob = new Blob([audioData], { type: 'audio/wav' })
-  formData.append('file', blob, basename(chunk.file))
+  // Ensure we have a proper ArrayBuffer (not SharedArrayBuffer)
+  let buffer: ArrayBuffer
+  if (audioData.buffer instanceof SharedArrayBuffer) {
+    buffer = new ArrayBuffer(audioData.byteLength)
+    new Uint8Array(buffer).set(audioData)
+  } else {
+    buffer = audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength)
+  }
+  // Use audio/ogg MIME type for Opus-encoded chunks
+  formData.append('file', new Blob([buffer], { type: 'audio/ogg' }), basename(chunk.file))
   formData.append('model', model)
 
   // Set response format based on model
+  // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json' format
+  // gpt-4o-transcribe-diarize supports 'json', 'text', 'diarized_json'
+  // whisper-1 supports 'json', 'text', 'srt', 'verbose_json', 'vtt'
   if (model.includes('diarize')) {
     formData.append('response_format', 'diarized_json')
     formData.append('chunking_strategy', 'auto')
-  } else {
+  } else if (model === 'whisper-1') {
     formData.append('response_format', 'verbose_json')
+    formData.append('timestamp_granularities[]', 'word')
+  } else {
+    // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json'
+    formData.append('response_format', 'json')
   }
 
   if (language) {
     formData.append('language', language)
   }
 
-  const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: formData,
-  })
+  const MAX_RETRIES = 3
+  let lastError: Error | null = null
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    let errorMessage = `OpenAI API failed (${response.status})`
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: formData,
+      })
 
-    // Try to parse as JSON for more detailed error info
-    if (errorText) {
-      try {
-        const errorJson = JSON.parse(errorText)
-        errorMessage += `:\n${JSON.stringify(errorJson, null, 2)}`
-      } catch {
-        errorMessage += `: ${errorText}`
+      if (!response.ok) {
+        const errorText = await response.text()
+        let errorMessage = `OpenAI API failed (${response.status})`
+
+        // Try to parse as JSON for more detailed error info
+        if (errorText) {
+          try {
+            const errorJson = JSON.parse(errorText)
+            errorMessage += `:\n${JSON.stringify(errorJson, null, 2)}`
+          } catch {
+            errorMessage += `: ${errorText}`
+          }
+        } else {
+          errorMessage += ` - Empty response body`
+          errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`
+        }
+
+        // Retry on 429 (rate limit) or 5xx (server errors)
+        if (response.status === 429 || response.status >= 500) {
+          lastError = new Error(errorMessage)
+          if (attempt < MAX_RETRIES) {
+            const delay = Math.pow(2, attempt - 1) * 1000
+            console.log(`    Retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+            continue
+          }
+        }
+
+        throw new Error(errorMessage)
       }
-    } else {
-      errorMessage += ` - Empty response body`
-      errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`
-    }
 
-    throw new Error(errorMessage)
+      return await response.json() as TranscriptionResponse
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+
+      // Retry on network errors
+      if (attempt < MAX_RETRIES && lastError.message.includes('fetch failed')) {
+        const delay = Math.pow(2, attempt - 1) * 1000
+        console.log(`    Network error, retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`)
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+
+      throw lastError
+    }
   }
 
-  return await response.json() as TranscriptionResponse
+  throw lastError || new Error('Unknown error')
 }
