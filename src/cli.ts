@@ -45,8 +45,8 @@ async function main (): Promise<void> {
   const command = args[0]
 
   if (!commands[command]) {
-    console.error(`Unknown command: ${command}`)
-    console.error('Run "transcribe --help" for usage information')
+    console.error(`Unknown command: ${command}\n`)
+    showHelp()
     process.exit(1)
   }
 
