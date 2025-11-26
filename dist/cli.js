@@ -397,7 +397,22 @@ async function transcribeChunk(chunk, apiKey, language, model) {
     });
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`OpenAI API failed (${response.status}): ${errorText}`);
+        let errorMessage = `OpenAI API failed (${response.status})`;
+        // Try to parse as JSON for more detailed error info
+        if (errorText) {
+            try {
+                const errorJson = JSON.parse(errorText);
+                errorMessage += `:\n${JSON.stringify(errorJson, null, 2)}`;
+            }
+            catch {
+                errorMessage += `: ${errorText}`;
+            }
+        }
+        else {
+            errorMessage += ` - Empty response body`;
+            errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`;
+        }
+        throw new Error(errorMessage);
     }
     return await response.json();
 }
