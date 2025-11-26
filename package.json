@@ -1,6 +1,6 @@
 {
   "name": "@krasnoperov/transcribe",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "CLI tool for audio/video transcription with speaker diarization, AI summarization, and infographic generation",
   "type": "module",
   "bin": {
