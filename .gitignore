@@ -1,0 +1,20 @@
+node_modules/
+*.log
+.env
+.DS_Store
+output/
+*.map
+
+# Media files (for testing)
+*.mp3
+*.mp4
+*.wav
+*.png
+*.jpg
+*.vtt
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!.releaserc.json
+!.claude-plugin/plugin.json

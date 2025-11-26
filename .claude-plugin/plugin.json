@@ -1,0 +1,7 @@
+{
+  "name": "transcribe",
+  "description": "Audio/video transcription with speaker diarization, AI summarization, and infographic generation. Transform recordings into transcripts, summaries, and visual content.",
+  "author": {
+    "name": "krasnoperov"
+  }
+}

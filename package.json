@@ -1,0 +1,64 @@
+{
+  "name": "@krasnoperov/transcribe",
+  "version": "1.0.0",
+  "description": "CLI tool for audio/video transcription with speaker diarization, AI summarization, and infographic generation",
+  "type": "module",
+  "bin": {
+    "transcribe": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "node src/cli.ts",
+    "build": "rollup -c && chmod +x dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'test/**/*.test.ts'",
+    "lint": "eslint . --fix"
+  },
+  "keywords": [
+    "transcription",
+    "claude-skills",
+    "openai",
+    "whisper",
+    "gemini",
+    "infographic",
+    "summarization",
+    "diarization",
+    "ai",
+    "cli"
+  ],
+  "author": "Aleksei Krasnoperov",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krasnoperov/transcribe.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    ".claude-plugin/",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@google/genai": "^1.30.0",
+    "@rollup/plugin-commonjs": "29.0.0",
+    "@rollup/plugin-json": "6.1.0",
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-typescript": "12.3.0",
+    "@semantic-release/git": "^10.0.1",
+    "@stylistic/eslint-plugin": "5.6.1",
+    "@types/node": "24.10.1",
+    "eslint": "9.39.1",
+    "rollup": "4.53.3",
+    "semantic-release": "^24.2.6",
+    "tslib": "2.8.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.0"
+  }
+}

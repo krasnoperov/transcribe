@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Semantic Release
+        env:
+          # NOTE: semantic-release requires a personal access token with repo permissions.
+          # The default GITHUB_TOKEN does not have sufficient permissions to create releases.
+          # Create a fine-grained personal access token with 'Contents: Read and write' permission.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npx semantic-release
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
