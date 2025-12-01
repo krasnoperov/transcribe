@@ -239,7 +239,7 @@ async function transcribeChunk (chunk: AudioChunk, apiKey: string, language: str
             errorMessage += `: ${errorText}`
           }
         } else {
-          errorMessage += ` - Empty response body`
+          errorMessage += ' - Empty response body'
           errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`
         }
 
