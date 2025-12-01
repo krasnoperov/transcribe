@@ -113,7 +113,7 @@ export default async function transcribe (args: string[]): Promise<void> {
           }
         } else {
           currentSegment.end = word.end
-          currentSegment.text += word.word
+          currentSegment.text += ' ' + word.word
         }
       }
       if (currentSegment) {
@@ -124,6 +124,18 @@ export default async function transcribe (args: string[]): Promise<void> {
           text: currentSegment.text.trim(),
         })
       }
+    }
+    // Handle plain json response (text only, no timestamps)
+    else if (transcript.text && transcript.text.trim()) {
+      // Split into sentences and create approximate cues
+      const text = transcript.text.trim()
+      const chunkDuration = chunks[i].duration || 30
+      mergedCues.push({
+        start: offset,
+        end: offset + chunkDuration,
+        speaker: null,
+        text,
+      })
     }
   }
 
