@@ -103,10 +103,15 @@ System requirements:
 ## AI Models Used
 
 ### Transcription
-OpenAI Speech-to-Text models (configurable via `--model` flag):
+Configurable via `--model` flag:
+
+**OpenAI models:**
 - **`gpt-4o-transcribe-diarize`** (default): Speaker diarization support
 - **`gpt-4o-transcribe`**: Without diarization
 - **`whisper-1`**: Original Whisper model
+
+**Google models:**
+- **`gemini-3`**: Uses Gemini 2.5 Flash for transcription with built-in speaker diarization. Handles very long audio (up to ~8 hours). Requires `GOOGLE_AI_STUDIO_KEY`.
 
 ### Summarization
 - **OpenAI `gpt-5.1`** with `reasoning_effort: 'medium'`

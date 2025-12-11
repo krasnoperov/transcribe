@@ -76,8 +76,9 @@ COMMANDS:
 OPTIONS:
   -o, --output <file>      Output file path
   --language <lang>        Language code (e.g., en, es, ru)
-  --model <model>          OpenAI transcription model (default: gpt-4o-transcribe-diarize)
-                           Options: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize
+  --model <model>          Transcription model (default: gpt-4o-transcribe-diarize)
+                           OpenAI: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize
+                           Google: gemini-3 (long audio support)
   --style <text>           Style instructions for infographic
   --reference <image>      Reference image for infographic style
   --prompt <text>          Custom prompt for summarization
@@ -86,8 +87,11 @@ OPTIONS:
   -v, --version            Show version
 
 EXAMPLES:
-  # Transcribe video with diarization
+  # Transcribe video with diarization (OpenAI)
   transcribe transcribe meeting.mp4 -o transcript.vtt
+
+  # Transcribe with Gemini (good for long audio)
+  transcribe transcribe podcast.mp3 --model gemini-3 -o transcript.vtt
 
   # Generate summary
   transcribe summarize transcript.vtt -o summary.md
@@ -99,8 +103,8 @@ EXAMPLES:
   transcribe process video.mp4 --language ru
 
 ENVIRONMENT VARIABLES:
-  OPENAI_API_KEY           OpenAI API key (required for transcription/summarization)
-  GOOGLE_AI_STUDIO_KEY     Google AI Studio key (required for infographics)
+  OPENAI_API_KEY           OpenAI API key (for OpenAI transcription/summarization)
+  GOOGLE_AI_STUDIO_KEY     Google AI Studio key (for Gemini transcription/infographics)
 
 Get API keys:
   OpenAI: https://platform.openai.com/api-keys

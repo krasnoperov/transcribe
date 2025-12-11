@@ -2,7 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import require$$1$3, { dirname, join, extname, basename } from 'node:path';
 import { readFileSync } from 'node:fs';
-import require$$0$7, { writeFile, unlink, readFile, mkdir } from 'node:fs/promises';
+import require$$0$7, { writeFile, readFile, unlink, mkdir } from 'node:fs/promises';
 import require$$0 from 'node:assert';
 import require$$0$2 from 'node:net';
 import require$$2 from 'node:http';
@@ -92,8 +92,9 @@ COMMANDS:
 OPTIONS:
   -o, --output <file>      Output file path
   --language <lang>        Language code (e.g., en, es, ru)
-  --model <model>          OpenAI transcription model (default: gpt-4o-transcribe-diarize)
-                           Options: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize
+  --model <model>          Transcription model (default: gpt-4o-transcribe-diarize)
+                           OpenAI: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize
+                           Google: gemini-3 (long audio support)
   --style <text>           Style instructions for infographic
   --reference <image>      Reference image for infographic style
   --prompt <text>          Custom prompt for summarization
@@ -102,8 +103,11 @@ OPTIONS:
   -v, --version            Show version
 
 EXAMPLES:
-  # Transcribe video with diarization
+  # Transcribe video with diarization (OpenAI)
   transcribe transcribe meeting.mp4 -o transcript.vtt
+
+  # Transcribe with Gemini (good for long audio)
+  transcribe transcribe podcast.mp3 --model gemini-3 -o transcript.vtt
 
   # Generate summary
   transcribe summarize transcript.vtt -o summary.md
@@ -115,8 +119,8 @@ EXAMPLES:
   transcribe process video.mp4 --language ru
 
 ENVIRONMENT VARIABLES:
-  OPENAI_API_KEY           OpenAI API key (required for transcription/summarization)
-  GOOGLE_AI_STUDIO_KEY     Google AI Studio key (required for infographics)
+  OPENAI_API_KEY           OpenAI API key (for OpenAI transcription/summarization)
+  GOOGLE_AI_STUDIO_KEY     Google AI Studio key (for Gemini transcription/infographics)
 
 Get API keys:
   OpenAI: https://platform.openai.com/api-keys
@@ -33712,465 +33716,6 @@ function requireUndici () {
 var undiciExports = requireUndici();
 
 /**
- * Configuration constants for transcript CLI
- */
-// Audio processing limits
-const MAX_AUDIO_DURATION = 1380; // 23 minutes in seconds (safe limit for OpenAI)
-// Supported audio extensions
-const AUDIO_EXTENSIONS = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.aac'];
-// MIME type mappings
-const MIME_TYPES = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp',
-};
-// Default MIME type
-const DEFAULT_MIME_TYPE = 'image/png';
-// Default model for transcription
-const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe-diarize';
-// Default summarization model
-const DEFAULT_SUMMARIZATION_MODEL = 'gpt-5.1';
-// Default infographic model
-const DEFAULT_INFOGRAPHIC_MODEL = 'gemini-3-pro-image-preview';
-// API endpoints
-const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
-// API key help URLs
-const OPENAI_API_KEY_URL = 'https://platform.openai.com/api-keys';
-const GOOGLE_API_KEY_URL = 'https://ai.google.dev/';
-// Default summarization prompt
-const DEFAULT_SUMMARY_PROMPT = `You are a helpful assistant that creates concise, well-structured summaries.
-Analyze the provided text and create a comprehensive summary in markdown format.
-
-IMPORTANT: Write the summary in the SAME LANGUAGE as the input text. Detect the language and respond accordingly.
-
-Include:
-- Overview/main topic
-- Key points (bullet points)
-- Important details
-- Decisions or conclusions (if any)
-
-Use clear headers and formatting.`;
-// Default infographic prompt
-const DEFAULT_INFOGRAPHIC_PROMPT = 'Create a visually appealing infographic that summarizes the most valuable points from this content. Use clear hierarchy, icons, and visual elements.';
-
-/**
- * Audio processing utilities using ffmpeg
- */
-/**
- * Check if file is an audio format
- */
-function isAudioFile(filename) {
-    const ext = extname(filename).toLowerCase();
-    return AUDIO_EXTENSIONS.includes(ext);
-}
-/**
- * Get audio duration in seconds
- */
-function getAudioDuration(audioFile) {
-    const output = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioFile}"`, { encoding: 'utf8' }).trim();
-    return parseFloat(output);
-}
-/**
- * Extract audio from video file
- */
-function extractAudio(inputFile, outputFile) {
-    execSync(`ffmpeg -i "${inputFile}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${outputFile}" -y`, { stdio: 'ignore' });
-}
-/**
- * Split audio into chunks
- * Uses OGG/Opus compression - optimal for speech, better than MP3
- */
-function splitAudio(audioFile, totalDuration, maxChunkDuration) {
-    if (totalDuration <= maxChunkDuration) {
-        return [{
-                file: audioFile,
-                offset: 0,
-                duration: totalDuration,
-            }];
-    }
-    const numChunks = Math.ceil(totalDuration / maxChunkDuration);
-    const chunkDuration = totalDuration / numChunks;
-    const chunks = [];
-    for (let i = 0; i < numChunks; i++) {
-        const startTime = i * chunkDuration;
-        // Use OGG/Opus format - excellent for speech, smaller than MP3
-        const chunkFile = `chunk_${String(i + 1).padStart(2, '0')}.ogg`;
-        // Opus codec at 32kbps is great for speech (smaller than 64k MP3, same quality)
-        const cmd = i < numChunks - 1
-            ? `ffmpeg -i "${audioFile}" -ss ${startTime} -t ${chunkDuration} -c:a libopus -b:a 32k -ar 16000 -ac 1 "${chunkFile}" -y`
-            : `ffmpeg -i "${audioFile}" -ss ${startTime} -c:a libopus -b:a 32k -ar 16000 -ac 1 "${chunkFile}" -y`;
-        execSync(cmd, { stdio: 'ignore' });
-        const actualDuration = i < numChunks - 1 ? chunkDuration : totalDuration - startTime;
-        chunks.push({
-            file: chunkFile,
-            offset: startTime,
-            duration: actualDuration,
-        });
-    }
-    return chunks;
-}
-
-/**
- * VTT (WebVTT) utilities for parsing and serializing subtitle files
- */
-/**
- * Parse a VTT file into structured cues
- */
-/**
- * Serialize cues into VTT format
- */
-function serializeVTT(cues) {
-    let vtt = 'WEBVTT\n\n';
-    for (const cue of cues) {
-        const start = formatTimestamp(cue.start);
-        const end = formatTimestamp(cue.end);
-        vtt += `${start} --> ${end}\n`;
-        if (cue.speaker) {
-            vtt += `<v ${cue.speaker}>${cue.text}\n\n`;
-        }
-        else {
-            vtt += `${cue.text}\n\n`;
-        }
-    }
-    return vtt;
-}
-/**
- * Format seconds as VTT timestamp
- */
-function formatTimestamp(totalSeconds) {
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = Math.floor(totalSeconds % 60);
-    const ms = Math.round((totalSeconds % 1) * 1000);
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
-}
-
-// Configure undici to disable timeouts for long-running transcription requests
-globalThis[Symbol.for('undici.globalDispatcher.1')] = new undiciExports.Agent({
-    headersTimeout: 0,
-    bodyTimeout: 0,
-});
-async function transcribe(args) {
-    const options = parseArgs$3(args);
-    if (!options.input || options.help) {
-        console.log('Usage: transcribe <input> [options]');
-        console.log('');
-        console.log('Options:');
-        console.log('  -o, --output <file>      Output VTT file (default: <input>-transcript.vtt)');
-        console.log('  --language <lang>        Language code (e.g., en, es, ru)');
-        console.log('  --model <model>          OpenAI model (default: gpt-4o-transcribe-diarize)');
-        console.log('                           Options: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize');
-        process.exit(options.help ? 0 : 1);
-    }
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        console.error('Error: OPENAI_API_KEY environment variable is not set');
-        console.error(`Get your API key at: ${OPENAI_API_KEY_URL}`);
-        process.exit(1);
-    }
-    const inputFile = options.input;
-    const outputFile = options.output || `${basename(inputFile, extname(inputFile))}-transcript.vtt`;
-    console.log('Step 1: Extracting audio...');
-    let audioFile = inputFile;
-    const needsExtraction = !isAudioFile(inputFile);
-    if (needsExtraction) {
-        audioFile = `${basename(inputFile, extname(inputFile))}-audio.wav`;
-        extractAudio(inputFile, audioFile);
-        console.log(`  Extracted to ${audioFile}`);
-    }
-    console.log('Step 2: Getting audio duration...');
-    const duration = getAudioDuration(audioFile);
-    console.log(`Audio duration: ${Math.floor(duration / 60)}m ${Math.floor(duration % 60)}s`);
-    console.log('Step 3: Splitting audio into chunks...');
-    const chunks = splitAudio(audioFile, duration, MAX_AUDIO_DURATION);
-    console.log(`Created ${chunks.length} chunk(s)`);
-    console.log('Step 4: Transcribing chunks...');
-    const model = options.model || DEFAULT_TRANSCRIPTION_MODEL;
-    console.log(`  Using model: ${model}`);
-    const transcripts = [];
-    for (let i = 0; i < chunks.length; i++) {
-        console.log(`  Transcribing chunk ${i + 1}/${chunks.length}...`);
-        const result = await transcribeChunk(chunks[i], apiKey, options.language, model);
-        transcripts.push(result);
-    }
-    console.log('Step 5: Merging transcripts...');
-    const mergedCues = [];
-    for (let i = 0; i < transcripts.length; i++) {
-        const transcript = transcripts[i];
-        const offset = chunks[i].offset;
-        // Handle diarized response (has segments with speaker info)
-        if (transcript.segments && transcript.segments.length > 0) {
-            for (const segment of transcript.segments) {
-                mergedCues.push({
-                    start: segment.start + offset,
-                    end: segment.end + offset,
-                    speaker: segment.speaker || 'Speaker',
-                    text: segment.text.trim(),
-                });
-            }
-        }
-        // Handle verbose_json response (no speaker diarization)
-        else if (transcript.words && transcript.words.length > 0) {
-            // Group words into segments (every ~5 seconds or sentence boundary)
-            let currentSegment = null;
-            for (const word of transcript.words) {
-                if (!currentSegment || word.start - currentSegment.start > 5.0) {
-                    if (currentSegment) {
-                        mergedCues.push({
-                            start: currentSegment.start + offset,
-                            end: currentSegment.end + offset,
-                            speaker: null,
-                            text: currentSegment.text.trim(),
-                        });
-                    }
-                    currentSegment = {
-                        start: word.start,
-                        end: word.end,
-                        text: word.word,
-                    };
-                }
-                else {
-                    currentSegment.end = word.end;
-                    currentSegment.text += ' ' + word.word;
-                }
-            }
-            if (currentSegment) {
-                mergedCues.push({
-                    start: currentSegment.start + offset,
-                    end: currentSegment.end + offset,
-                    speaker: null,
-                    text: currentSegment.text.trim(),
-                });
-            }
-        }
-        // Handle plain json response (text only, no timestamps)
-        else if (transcript.text && transcript.text.trim()) {
-            // Split into sentences and create approximate cues
-            const text = transcript.text.trim();
-            const chunkDuration = chunks[i].duration || 30;
-            mergedCues.push({
-                start: offset,
-                end: offset + chunkDuration,
-                speaker: null,
-                text,
-            });
-        }
-    }
-    const mergedVtt = serializeVTT(mergedCues);
-    await writeFile(outputFile, mergedVtt, 'utf8');
-    // Cleanup temporary files
-    try {
-        if (needsExtraction && audioFile !== inputFile) {
-            await unlink(audioFile);
-        }
-        for (const chunk of chunks) {
-            if (chunk.file !== audioFile) {
-                await unlink(chunk.file);
-            }
-        }
-    }
-    catch {
-        // Ignore cleanup errors
-    }
-    console.log(`\nTranscription complete: ${outputFile}`);
-}
-function parseArgs$3(args) {
-    const options = {};
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === '-h' || args[i] === '--help') {
-            options.help = true;
-        }
-        else if (args[i] === '-o' || args[i] === '--output') {
-            options.output = args[++i];
-        }
-        else if (args[i] === '--language') {
-            options.language = args[++i];
-        }
-        else if (args[i] === '--model') {
-            options.model = args[++i];
-        }
-        else if (!options.input) {
-            options.input = args[i];
-        }
-    }
-    return options;
-}
-async function transcribeChunk(chunk, apiKey, language, model) {
-    const audioData = await readFile(chunk.file);
-    const formData = new FormData();
-    // Ensure we have a proper ArrayBuffer (not SharedArrayBuffer)
-    let buffer;
-    if (audioData.buffer instanceof SharedArrayBuffer) {
-        buffer = new ArrayBuffer(audioData.byteLength);
-        new Uint8Array(buffer).set(audioData);
-    }
-    else {
-        buffer = audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength);
-    }
-    // Use audio/ogg MIME type for Opus-encoded chunks
-    formData.append('file', new Blob([buffer], { type: 'audio/ogg' }), basename(chunk.file));
-    formData.append('model', model);
-    // Set response format based on model
-    // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json' format
-    // gpt-4o-transcribe-diarize supports 'json', 'text', 'diarized_json'
-    // whisper-1 supports 'json', 'text', 'srt', 'verbose_json', 'vtt'
-    if (model.includes('diarize')) {
-        formData.append('response_format', 'diarized_json');
-        formData.append('chunking_strategy', 'auto');
-    }
-    else if (model === 'whisper-1') {
-        formData.append('response_format', 'verbose_json');
-        formData.append('timestamp_granularities[]', 'word');
-    }
-    else {
-        // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json'
-        formData.append('response_format', 'json');
-    }
-    if (language) {
-        formData.append('language', language);
-    }
-    const MAX_RETRIES = 3;
-    let lastError = null;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                },
-                body: formData,
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                let errorMessage = `OpenAI API failed (${response.status})`;
-                // Try to parse as JSON for more detailed error info
-                if (errorText) {
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        errorMessage += `:\n${JSON.stringify(errorJson, null, 2)}`;
-                    }
-                    catch {
-                        errorMessage += `: ${errorText}`;
-                    }
-                }
-                else {
-                    errorMessage += ` - Empty response body`;
-                    errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`;
-                }
-                // Retry on 429 (rate limit) or 5xx (server errors)
-                if (response.status === 429 || response.status >= 500) {
-                    lastError = new Error(errorMessage);
-                    if (attempt < MAX_RETRIES) {
-                        const delay = Math.pow(2, attempt - 1) * 1000;
-                        console.log(`    Retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        continue;
-                    }
-                }
-                throw new Error(errorMessage);
-            }
-            return await response.json();
-        }
-        catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            // Retry on network errors
-            if (attempt < MAX_RETRIES && lastError.message.includes('fetch failed')) {
-                const delay = Math.pow(2, attempt - 1) * 1000;
-                console.log(`    Network error, retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                continue;
-            }
-            throw lastError;
-        }
-    }
-    throw lastError || new Error('Unknown error');
-}
-
-var transcribe$1 = /*#__PURE__*/Object.freeze({
-  __proto__: null,
-  default: transcribe
-});
-
-const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
-async function summarize(args) {
-    const options = parseArgs$2(args);
-    if (!options.input || options.help) {
-        console.log('Usage: summarize <input> [options]');
-        console.log('');
-        console.log('Options:');
-        console.log('  -o, --output <file>      Output file (default: <input>-summary.md)');
-        console.log('  --prompt <text>          Custom instructions for summarization');
-        process.exit(options.help ? 0 : 1);
-    }
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        console.error('Error: OPENAI_API_KEY environment variable is not set');
-        console.error(`Get your API key at: ${OPENAI_API_KEY_URL}`);
-        process.exit(1);
-    }
-    const inputFile = options.input;
-    const outputFile = options.output || `${basename(inputFile, extname(inputFile))}-summary.md`;
-    console.log(`Reading input from ${inputFile}...`);
-    const inputText = await readFile(inputFile, 'utf8');
-    console.log('Generating summary...');
-    const summary = await generateSummary(inputText, apiKey, options.prompt);
-    // Ensure summary is a string
-    const summaryText = typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2);
-    await writeFile(outputFile, summaryText, 'utf8');
-    console.log(`\nSummary saved to: ${outputFile}`);
-}
-function parseArgs$2(args) {
-    const options = {};
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === '-h' || args[i] === '--help') {
-            options.help = true;
-        }
-        else if (args[i] === '-o' || args[i] === '--output') {
-            options.output = args[++i];
-        }
-        else if (args[i] === '--prompt') {
-            options.prompt = args[++i];
-        }
-        else if (!options.input) {
-            options.input = args[i];
-        }
-    }
-    return options;
-}
-async function generateSummary(text, apiKey, customPrompt) {
-    const prompt = customPrompt || DEFAULT_SUMMARY_PROMPT;
-    const response = await fetch(OPENAI_CHAT_URL, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            model: DEFAULT_SUMMARIZATION_MODEL,
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt + '\n\n' + text,
-                },
-            ],
-            reasoning_effort: 'medium',
-        }),
-    });
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenAI API failed (${response.status}): ${errorText}`);
-    }
-    const data = await response.json();
-    return data.choices[0].message.content || '';
-}
-
-var summarize$1 = /*#__PURE__*/Object.freeze({
-  __proto__: null,
-  default: summarize
-});
-
-/**
  * @license
  * Copyright 2025 Google LLC
  * SPDX-License-Identifier: Apache-2.0
@@ -50833,6 +50378,698 @@ class GoogleGenAI {
         this.fileSearchStores = new FileSearchStores(this.apiClient);
     }
 }
+
+/**
+ * Configuration constants for transcript CLI
+ */
+// Audio processing limits
+const MAX_AUDIO_DURATION = 1380; // 23 minutes in seconds (safe limit for OpenAI)
+// Supported audio extensions
+const AUDIO_EXTENSIONS = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.aac'];
+// MIME type mappings
+const MIME_TYPES = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+};
+// Default MIME type
+const DEFAULT_MIME_TYPE = 'image/png';
+// Audio MIME type mappings
+const AUDIO_MIME_TYPES = {
+    '.wav': 'audio/wav',
+    '.mp3': 'audio/mp3',
+    '.m4a': 'audio/m4a',
+    '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac',
+    '.aac': 'audio/aac',
+};
+// Model configurations
+const MODELS = {
+    'whisper-1': {
+        name: 'whisper-1',
+        provider: 'openai',
+        supportsDiarization: false,
+        responseFormat: 'verbose_json',
+    },
+    'gpt-4o-transcribe': {
+        name: 'gpt-4o-transcribe',
+        provider: 'openai',
+        supportsDiarization: false,
+        responseFormat: 'verbose_json',
+    },
+    'gpt-4o-transcribe-diarize': {
+        name: 'gpt-4o-transcribe-diarize',
+        provider: 'openai',
+        supportsDiarization: true,
+        responseFormat: 'diarized_json',
+    },
+    'gemini-3': {
+        name: 'gemini-3',
+        provider: 'google',
+        supportsDiarization: true,
+        responseFormat: 'text',
+    },
+};
+// Default model for transcription
+const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe-diarize';
+// Default summarization model
+const DEFAULT_SUMMARIZATION_MODEL = 'gpt-5.1';
+// Default infographic model
+const DEFAULT_INFOGRAPHIC_MODEL = 'gemini-3-pro-image-preview';
+// Gemini transcription model
+const GEMINI_TRANSCRIPTION_MODEL = 'gemini-2.5-flash';
+// API endpoints
+const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
+// API key help URLs
+const OPENAI_API_KEY_URL = 'https://platform.openai.com/api-keys';
+const GOOGLE_API_KEY_URL = 'https://ai.google.dev/';
+// Default summarization prompt
+const DEFAULT_SUMMARY_PROMPT = `You are a helpful assistant that creates concise, well-structured summaries.
+Analyze the provided text and create a comprehensive summary in markdown format.
+
+IMPORTANT: Write the summary in the SAME LANGUAGE as the input text. Detect the language and respond accordingly.
+
+Include:
+- Overview/main topic
+- Key points (bullet points)
+- Important details
+- Decisions or conclusions (if any)
+
+Use clear headers and formatting.`;
+// Default infographic prompt
+const DEFAULT_INFOGRAPHIC_PROMPT = 'Create a visually appealing infographic that summarizes the most valuable points from this content. Use clear hierarchy, icons, and visual elements.';
+// Default Gemini transcription prompt
+const DEFAULT_GEMINI_TRANSCRIPTION_PROMPT = `Transcribe this audio file completely and accurately.
+
+Requirements:
+- Include timestamps in the format [HH:MM:SS] at regular intervals (every 30-60 seconds or at natural breaks)
+- Identify different speakers and label them as "Speaker A:", "Speaker B:", etc.
+- If you can identify the speaker's name from context, use their name instead
+- Preserve the original language of the audio
+- Include non-verbal cues in brackets when relevant, e.g., [laughter], [pause], [applause]
+
+Output format:
+[00:00:00] Speaker A: First line of dialogue...
+[00:00:15] Speaker B: Response...
+
+Begin transcription:`;
+
+/**
+ * Audio processing utilities using ffmpeg
+ */
+/**
+ * Check if file is an audio format
+ */
+function isAudioFile(filename) {
+    const ext = extname(filename).toLowerCase();
+    return AUDIO_EXTENSIONS.includes(ext);
+}
+/**
+ * Get audio duration in seconds
+ */
+function getAudioDuration(audioFile) {
+    const output = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioFile}"`, { encoding: 'utf8' }).trim();
+    return parseFloat(output);
+}
+/**
+ * Extract audio from video file
+ */
+function extractAudio(inputFile, outputFile) {
+    execSync(`ffmpeg -i "${inputFile}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${outputFile}" -y`, { stdio: 'ignore' });
+}
+/**
+ * Split audio into chunks
+ * Uses OGG/Opus compression - optimal for speech, better than MP3
+ */
+function splitAudio(audioFile, totalDuration, maxChunkDuration) {
+    if (totalDuration <= maxChunkDuration) {
+        return [{
+                file: audioFile,
+                offset: 0,
+                duration: totalDuration,
+            }];
+    }
+    const numChunks = Math.ceil(totalDuration / maxChunkDuration);
+    const chunkDuration = totalDuration / numChunks;
+    const chunks = [];
+    for (let i = 0; i < numChunks; i++) {
+        const startTime = i * chunkDuration;
+        // Use OGG/Opus format - excellent for speech, smaller than MP3
+        const chunkFile = `chunk_${String(i + 1).padStart(2, '0')}.ogg`;
+        // Opus codec at 32kbps is great for speech (smaller than 64k MP3, same quality)
+        const cmd = i < numChunks - 1
+            ? `ffmpeg -i "${audioFile}" -ss ${startTime} -t ${chunkDuration} -c:a libopus -b:a 32k -ar 16000 -ac 1 "${chunkFile}" -y`
+            : `ffmpeg -i "${audioFile}" -ss ${startTime} -c:a libopus -b:a 32k -ar 16000 -ac 1 "${chunkFile}" -y`;
+        execSync(cmd, { stdio: 'ignore' });
+        const actualDuration = i < numChunks - 1 ? chunkDuration : totalDuration - startTime;
+        chunks.push({
+            file: chunkFile,
+            offset: startTime,
+            duration: actualDuration,
+        });
+    }
+    return chunks;
+}
+
+/**
+ * VTT (WebVTT) utilities for parsing and serializing subtitle files
+ */
+/**
+ * Parse a VTT file into structured cues
+ */
+/**
+ * Serialize cues into VTT format
+ */
+function serializeVTT(cues) {
+    let vtt = 'WEBVTT\n\n';
+    for (const cue of cues) {
+        const start = formatTimestamp(cue.start);
+        const end = formatTimestamp(cue.end);
+        vtt += `${start} --> ${end}\n`;
+        if (cue.speaker) {
+            vtt += `<v ${cue.speaker}>${cue.text}\n\n`;
+        }
+        else {
+            vtt += `${cue.text}\n\n`;
+        }
+    }
+    return vtt;
+}
+/**
+ * Format seconds as VTT timestamp
+ */
+function formatTimestamp(totalSeconds) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    const ms = Math.round((totalSeconds % 1) * 1000);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+// Configure undici to disable timeouts for long-running transcription requests
+globalThis[Symbol.for('undici.globalDispatcher.1')] = new undiciExports.Agent({
+    headersTimeout: 0,
+    bodyTimeout: 0,
+});
+async function transcribe(args) {
+    const options = parseArgs$3(args);
+    if (!options.input || options.help) {
+        console.log('Usage: transcribe <input> [options]');
+        console.log('');
+        console.log('Options:');
+        console.log('  -o, --output <file>      Output VTT file (default: <input>-transcript.vtt)');
+        console.log('  --language <lang>        Language code (e.g., en, es, ru)');
+        console.log('  --model <model>          Transcription model (default: gpt-4o-transcribe-diarize)');
+        console.log('                           OpenAI: whisper-1, gpt-4o-transcribe, gpt-4o-transcribe-diarize');
+        console.log('                           Google: gemini-3');
+        process.exit(options.help ? 0 : 1);
+    }
+    const model = options.model || DEFAULT_TRANSCRIPTION_MODEL;
+    const modelConfig = MODELS[model];
+    if (!modelConfig) {
+        console.error(`Error: Unknown model "${model}"`);
+        console.error('Available models: ' + Object.keys(MODELS).join(', '));
+        process.exit(1);
+    }
+    // Check for required API key based on provider
+    if (modelConfig.provider === 'google') {
+        const apiKey = process.env.GOOGLE_AI_STUDIO_KEY;
+        if (!apiKey) {
+            console.error('Error: GOOGLE_AI_STUDIO_KEY environment variable is not set');
+            console.error(`Get your API key at: ${GOOGLE_API_KEY_URL}`);
+            process.exit(1);
+        }
+    }
+    else {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            console.error('Error: OPENAI_API_KEY environment variable is not set');
+            console.error(`Get your API key at: ${OPENAI_API_KEY_URL}`);
+            process.exit(1);
+        }
+    }
+    const inputFile = options.input;
+    const outputFile = options.output || `${basename(inputFile, extname(inputFile))}-transcript.vtt`;
+    console.log(`Using model: ${model} (${modelConfig.provider})`);
+    // Branch based on provider
+    let mergedVtt;
+    if (modelConfig.provider === 'google') {
+        mergedVtt = await transcribeWithGemini(inputFile, options);
+    }
+    else {
+        mergedVtt = await transcribeWithOpenAI(inputFile, options, model);
+    }
+    await writeFile(outputFile, mergedVtt, 'utf8');
+    console.log(`\nTranscription complete: ${outputFile}`);
+}
+function parseArgs$3(args) {
+    const options = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-h' || args[i] === '--help') {
+            options.help = true;
+        }
+        else if (args[i] === '-o' || args[i] === '--output') {
+            options.output = args[++i];
+        }
+        else if (args[i] === '--language') {
+            options.language = args[++i];
+        }
+        else if (args[i] === '--model') {
+            options.model = args[++i];
+        }
+        else if (!options.input) {
+            options.input = args[i];
+        }
+    }
+    return options;
+}
+// OpenAI transcription implementation
+async function transcribeWithOpenAI(inputFile, options, model) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    console.log('Step 1: Extracting audio...');
+    let audioFile = inputFile;
+    const needsExtraction = !isAudioFile(inputFile);
+    if (needsExtraction) {
+        audioFile = `${basename(inputFile, extname(inputFile))}-audio.wav`;
+        extractAudio(inputFile, audioFile);
+        console.log(`  Extracted to ${audioFile}`);
+    }
+    console.log('Step 2: Getting audio duration...');
+    const duration = getAudioDuration(audioFile);
+    console.log(`Audio duration: ${Math.floor(duration / 60)}m ${Math.floor(duration % 60)}s`);
+    console.log('Step 3: Splitting audio into chunks...');
+    const chunks = splitAudio(audioFile, duration, MAX_AUDIO_DURATION);
+    console.log(`Created ${chunks.length} chunk(s)`);
+    console.log('Step 4: Transcribing chunks...');
+    const transcripts = [];
+    for (let i = 0; i < chunks.length; i++) {
+        console.log(`  Transcribing chunk ${i + 1}/${chunks.length}...`);
+        const result = await transcribeOpenAIChunk(chunks[i], apiKey, options.language, model);
+        transcripts.push(result);
+    }
+    console.log('Step 5: Merging transcripts...');
+    const mergedCues = [];
+    for (let i = 0; i < transcripts.length; i++) {
+        const transcript = transcripts[i];
+        const offset = chunks[i].offset;
+        // Handle diarized response (has segments with speaker info)
+        if (transcript.segments && transcript.segments.length > 0) {
+            for (const segment of transcript.segments) {
+                mergedCues.push({
+                    start: segment.start + offset,
+                    end: segment.end + offset,
+                    speaker: segment.speaker || 'Speaker',
+                    text: segment.text.trim(),
+                });
+            }
+        }
+        // Handle verbose_json response (no speaker diarization)
+        else if (transcript.words && transcript.words.length > 0) {
+            // Group words into segments (every ~5 seconds or sentence boundary)
+            let currentSegment = null;
+            for (const word of transcript.words) {
+                if (!currentSegment || word.start - currentSegment.start > 5.0) {
+                    if (currentSegment) {
+                        mergedCues.push({
+                            start: currentSegment.start + offset,
+                            end: currentSegment.end + offset,
+                            speaker: null,
+                            text: currentSegment.text.trim(),
+                        });
+                    }
+                    currentSegment = {
+                        start: word.start,
+                        end: word.end,
+                        text: word.word,
+                    };
+                }
+                else {
+                    currentSegment.end = word.end;
+                    currentSegment.text += ' ' + word.word;
+                }
+            }
+            if (currentSegment) {
+                mergedCues.push({
+                    start: currentSegment.start + offset,
+                    end: currentSegment.end + offset,
+                    speaker: null,
+                    text: currentSegment.text.trim(),
+                });
+            }
+        }
+        // Handle plain json response (text only, no timestamps)
+        else if (transcript.text && transcript.text.trim()) {
+            const text = transcript.text.trim();
+            const chunkDuration = chunks[i].duration || 30;
+            mergedCues.push({
+                start: offset,
+                end: offset + chunkDuration,
+                speaker: null,
+                text,
+            });
+        }
+    }
+    // Cleanup temporary files
+    try {
+        if (needsExtraction && audioFile !== inputFile) {
+            await unlink(audioFile);
+        }
+        for (const chunk of chunks) {
+            if (chunk.file !== audioFile) {
+                await unlink(chunk.file);
+            }
+        }
+    }
+    catch {
+        // Ignore cleanup errors
+    }
+    return serializeVTT(mergedCues);
+}
+async function transcribeOpenAIChunk(chunk, apiKey, language, model) {
+    const audioData = await readFile(chunk.file);
+    const formData = new FormData();
+    // Ensure we have a proper ArrayBuffer (not SharedArrayBuffer)
+    let buffer;
+    if (audioData.buffer instanceof SharedArrayBuffer) {
+        buffer = new ArrayBuffer(audioData.byteLength);
+        new Uint8Array(buffer).set(audioData);
+    }
+    else {
+        buffer = audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength);
+    }
+    // Use audio/ogg MIME type for Opus-encoded chunks
+    formData.append('file', new Blob([buffer], { type: 'audio/ogg' }), basename(chunk.file));
+    formData.append('model', model);
+    // Set response format based on model
+    // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json' format
+    // gpt-4o-transcribe-diarize supports 'json', 'text', 'diarized_json'
+    // whisper-1 supports 'json', 'text', 'srt', 'verbose_json', 'vtt'
+    if (model.includes('diarize')) {
+        formData.append('response_format', 'diarized_json');
+        formData.append('chunking_strategy', 'auto');
+    }
+    else if (model === 'whisper-1') {
+        formData.append('response_format', 'verbose_json');
+        formData.append('timestamp_granularities[]', 'word');
+    }
+    else {
+        // gpt-4o-transcribe and gpt-4o-mini-transcribe only support 'json'
+        formData.append('response_format', 'json');
+    }
+    if (language) {
+        formData.append('language', language);
+    }
+    const MAX_RETRIES = 3;
+    let lastError = null;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: formData,
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                let errorMessage = `OpenAI API failed (${response.status})`;
+                // Try to parse as JSON for more detailed error info
+                if (errorText) {
+                    try {
+                        const errorJson = JSON.parse(errorText);
+                        errorMessage += `:\n${JSON.stringify(errorJson, null, 2)}`;
+                    }
+                    catch {
+                        errorMessage += `: ${errorText}`;
+                    }
+                }
+                else {
+                    errorMessage += ' - Empty response body';
+                    errorMessage += `\nResponse headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2)}`;
+                }
+                // Retry on 429 (rate limit) or 5xx (server errors)
+                if (response.status === 429 || response.status >= 500) {
+                    lastError = new Error(errorMessage);
+                    if (attempt < MAX_RETRIES) {
+                        const delay = Math.pow(2, attempt - 1) * 1000;
+                        console.log(`    Retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                }
+                throw new Error(errorMessage);
+            }
+            return await response.json();
+        }
+        catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            // Retry on network errors
+            if (attempt < MAX_RETRIES && lastError.message.includes('fetch failed')) {
+                const delay = Math.pow(2, attempt - 1) * 1000;
+                console.log(`    Network error, retrying in ${delay / 1000}s (attempt ${attempt}/${MAX_RETRIES})...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            throw lastError;
+        }
+    }
+    throw lastError || new Error('Unknown error');
+}
+// Gemini transcription implementation
+async function transcribeWithGemini(inputFile, options) {
+    const apiKey = process.env.GOOGLE_AI_STUDIO_KEY;
+    const ai = new GoogleGenAI({ apiKey });
+    console.log('Step 1: Extracting audio...');
+    let audioFile = inputFile;
+    const needsExtraction = !isAudioFile(inputFile);
+    if (needsExtraction) {
+        audioFile = `${basename(inputFile, extname(inputFile))}-audio.mp3`;
+        extractAudio(inputFile, audioFile);
+        console.log(`  Extracted to ${audioFile}`);
+    }
+    console.log('Step 2: Uploading audio to Gemini...');
+    const audioData = await readFile(audioFile);
+    const base64Audio = audioData.toString('base64');
+    const mimeType = getAudioMimeType(audioFile);
+    console.log(`  File size: ${(audioData.length / 1024 / 1024).toFixed(2)} MB`);
+    console.log('Step 3: Transcribing with Gemini...');
+    // Build prompt with optional language hint
+    let prompt = DEFAULT_GEMINI_TRANSCRIPTION_PROMPT;
+    if (options.language) {
+        prompt = `Language hint: The audio is in ${options.language}.\n\n${prompt}`;
+    }
+    const response = await ai.models.generateContent({
+        model: GEMINI_TRANSCRIPTION_MODEL,
+        contents: [
+            {
+                role: 'user',
+                parts: [
+                    { text: prompt },
+                    {
+                        inlineData: {
+                            mimeType,
+                            data: base64Audio,
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    const transcriptText = response.text || '';
+    if (!transcriptText.trim()) {
+        throw new Error('Gemini returned empty transcription');
+    }
+    console.log('Step 4: Converting to VTT format...');
+    const cues = parseGeminiTranscript(transcriptText);
+    // Cleanup temporary files
+    try {
+        if (needsExtraction && audioFile !== inputFile) {
+            await unlink(audioFile);
+        }
+    }
+    catch {
+        // Ignore cleanup errors
+    }
+    return serializeVTT(cues);
+}
+// Parse Gemini's text transcript into VTT cues
+function parseGeminiTranscript(text) {
+    const cues = [];
+    const lines = text.split('\n').filter(line => line.trim());
+    // Pattern variations Gemini might return:
+    // [ MM:SS ] Speaker: Text (with spaces)
+    // [MM:SS] Speaker: Text (without spaces)
+    // [ HH:MM:SS ] Speaker: Text
+    // [HH:MM:SS] Speaker: Text
+    const timestampPattern = /^\[\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*\]\s*(?:([^:]+):\s*)?(.+)$/;
+    for (const line of lines) {
+        const match = line.match(timestampPattern);
+        if (match) {
+            const [, part1, part2, part3, speaker, lineText] = match;
+            // Determine timestamp format
+            // Gemini can return various formats:
+            // - [MM:SS] - minutes:seconds (most common)
+            // - [HH:MM:SS] - hours:minutes:seconds (for very long audio)
+            // - [MM:SS:FF] - minutes:seconds:frames (sometimes seen)
+            let hours = 0;
+            let minutes;
+            let seconds;
+            const p1 = parseInt(part1, 10);
+            const p2 = parseInt(part2, 10);
+            const p3 = part3 !== undefined ? parseInt(part3, 10) : undefined;
+            if (p3 !== undefined) {
+                // Three parts: HH:MM:SS format
+                // Gemini typically returns this format when asked for timestamps
+                hours = p1;
+                minutes = p2;
+                seconds = p3;
+            }
+            else {
+                // Two parts: MM:SS format (most common from Gemini)
+                minutes = p1;
+                seconds = p2;
+            }
+            const startTime = hours * 3600 + minutes * 60 + seconds;
+            // Set end time of previous cue
+            if (cues.length > 0) {
+                cues[cues.length - 1].end = startTime;
+            }
+            // Clean up speaker label
+            let cleanSpeaker = speaker?.trim() || null;
+            if (cleanSpeaker) {
+                // Remove markdown formatting (**, *, __, _)
+                cleanSpeaker = cleanSpeaker.replace(/^\*{1,2}|^\_{1,2}|\*{1,2}$|\_{1,2}$/g, '').trim();
+            }
+            if (cleanSpeaker && cleanSpeaker.length > 30) {
+                // Likely not a speaker name, but part of the text
+                cues.push({
+                    start: startTime,
+                    end: startTime + 30,
+                    speaker: null,
+                    text: (cleanSpeaker + ': ' + lineText).trim(),
+                });
+            }
+            else {
+                cues.push({
+                    start: startTime,
+                    end: startTime + 30, // Default 30s, will be adjusted by next cue
+                    speaker: cleanSpeaker || null,
+                    text: lineText.trim(),
+                });
+            }
+        }
+        else if (cues.length > 0 && line.trim()) {
+            // Continuation of previous cue (no timestamp)
+            cues[cues.length - 1].text += ' ' + line.trim();
+        }
+        else if (line.trim() && cues.length === 0) {
+            // Text without timestamp at the beginning
+            cues.push({
+                start: 0,
+                end: 30,
+                speaker: null,
+                text: line.trim(),
+            });
+        }
+    }
+    // Adjust last cue's end time
+    if (cues.length > 0) {
+        const lastCue = cues[cues.length - 1];
+        // Estimate based on text length (~150 words per minute)
+        const wordCount = lastCue.text.split(/\s+/).length;
+        const estimatedDuration = Math.max(5, Math.ceil(wordCount / 2.5));
+        lastCue.end = lastCue.start + estimatedDuration;
+    }
+    return cues;
+}
+function getAudioMimeType(filename) {
+    const ext = extname(filename).toLowerCase();
+    return AUDIO_MIME_TYPES[ext] || 'audio/mp3';
+}
+
+var transcribe$1 = /*#__PURE__*/Object.freeze({
+  __proto__: null,
+  default: transcribe
+});
+
+const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+async function summarize(args) {
+    const options = parseArgs$2(args);
+    if (!options.input || options.help) {
+        console.log('Usage: summarize <input> [options]');
+        console.log('');
+        console.log('Options:');
+        console.log('  -o, --output <file>      Output file (default: <input>-summary.md)');
+        console.log('  --prompt <text>          Custom instructions for summarization');
+        process.exit(options.help ? 0 : 1);
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+        console.error('Error: OPENAI_API_KEY environment variable is not set');
+        console.error(`Get your API key at: ${OPENAI_API_KEY_URL}`);
+        process.exit(1);
+    }
+    const inputFile = options.input;
+    const outputFile = options.output || `${basename(inputFile, extname(inputFile))}-summary.md`;
+    console.log(`Reading input from ${inputFile}...`);
+    const inputText = await readFile(inputFile, 'utf8');
+    console.log('Generating summary...');
+    const summary = await generateSummary(inputText, apiKey, options.prompt);
+    // Ensure summary is a string
+    const summaryText = typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2);
+    await writeFile(outputFile, summaryText, 'utf8');
+    console.log(`\nSummary saved to: ${outputFile}`);
+}
+function parseArgs$2(args) {
+    const options = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-h' || args[i] === '--help') {
+            options.help = true;
+        }
+        else if (args[i] === '-o' || args[i] === '--output') {
+            options.output = args[++i];
+        }
+        else if (args[i] === '--prompt') {
+            options.prompt = args[++i];
+        }
+        else if (!options.input) {
+            options.input = args[i];
+        }
+    }
+    return options;
+}
+async function generateSummary(text, apiKey, customPrompt) {
+    const prompt = customPrompt || DEFAULT_SUMMARY_PROMPT;
+    const response = await fetch(OPENAI_CHAT_URL, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            model: DEFAULT_SUMMARIZATION_MODEL,
+            messages: [
+                {
+                    role: 'user',
+                    content: prompt + '\n\n' + text,
+                },
+            ],
+            reasoning_effort: 'medium',
+        }),
+    });
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenAI API failed (${response.status}): ${errorText}`);
+    }
+    const data = await response.json();
+    return data.choices[0].message.content || '';
+}
+
+var summarize$1 = /*#__PURE__*/Object.freeze({
+  __proto__: null,
+  default: summarize
+});
 
 async function infographic(args) {
     const options = parseArgs$1(args);

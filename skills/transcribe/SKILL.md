@@ -42,8 +42,11 @@ export GOOGLE_AI_STUDIO_KEY="your-key"  # Get at https://ai.google.dev/
 ## Quick Examples
 
 ```bash
-# Transcribe a video with speaker diarization
+# Transcribe a video with speaker diarization (OpenAI, default)
 npx @krasnoperov/transcribe transcribe meeting.mp4 -o transcript.vtt
+
+# Transcribe with Gemini (good for long audio, up to ~8 hours)
+npx @krasnoperov/transcribe transcribe podcast.mp3 --model gemini-3 -o transcript.vtt
 
 # Generate summary from transcript
 npx @krasnoperov/transcribe summarize transcript.vtt -o summary.md
@@ -59,9 +62,12 @@ npx @krasnoperov/transcribe process recording.mp4 --language en --output-dir ./o
 
 ```
 --model <model>              Transcription model:
+                             OpenAI models:
                              - gpt-4o-transcribe-diarize (default, with speakers)
                              - gpt-4o-transcribe (no speakers)
                              - whisper-1 (legacy)
+                             Google models:
+                             - gemini-3 (with speakers, handles long audio up to ~8h)
 --language <lang>            Language code (e.g., en, es, ru, de)
 -o, --output <file>          Output VTT file path
 ```
@@ -105,6 +111,7 @@ npx @krasnoperov/transcribe process recording.mp4 --language en --output-dir ./o
 
 ## AI Models Used
 
-- **Transcription**: OpenAI gpt-4o-transcribe-diarize (speaker identification)
+- **Transcription (OpenAI)**: gpt-4o-transcribe-diarize (speaker identification)
+- **Transcription (Google)**: gemini-2.5-flash via gemini-3 model option (speaker identification, long audio support)
 - **Summarization**: OpenAI gpt-5.1 with reasoning
 - **Infographics**: Google Gemini gemini-3-pro-image-preview

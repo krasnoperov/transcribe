@@ -102,10 +102,20 @@ export interface MimeTypeMap {
 }
 
 // Model configuration
-export type TranscriptionModel = 'whisper-1' | 'gpt-4o-transcribe' | 'gpt-4o-transcribe-diarize'
+export type TranscriptionModel = 'whisper-1' | 'gpt-4o-transcribe' | 'gpt-4o-transcribe-diarize' | 'gemini-3'
+
+export type TranscriptionProvider = 'openai' | 'google'
 
 export interface ModelConfig {
   name: TranscriptionModel
+  provider: TranscriptionProvider
   supportsDiarization: boolean
-  responseFormat: 'verbose_json' | 'diarized_json'
+  responseFormat: 'verbose_json' | 'diarized_json' | 'text'
+}
+
+// Audio MIME type mapping
+export type AudioMimeType = 'audio/wav' | 'audio/mp3' | 'audio/mpeg' | 'audio/m4a' | 'audio/mp4' | 'audio/ogg' | 'audio/flac' | 'audio/aac'
+
+export interface AudioMimeTypeMap {
+  [key: string]: AudioMimeType
 }

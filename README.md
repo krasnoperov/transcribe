@@ -80,6 +80,16 @@ npx -y @krasnoperov/transcribe@latest transcribe podcast.mp3 \
   -o podcast.vtt
 ```
 
+### Transcription with Gemini 3
+
+```bash
+npx -y @krasnoperov/transcribe@latest transcribe meeting.mp4 \
+  --model gemini-3 \
+  -o meeting.vtt
+```
+
+Gemini 3 offers excellent transcription with built-in speaker diarization and can handle very long audio files (up to ~8 hours).
+
 Output (VTT with speaker tags):
 ```
 WEBVTT
@@ -111,7 +121,9 @@ npx -y @krasnoperov/transcribe@latest infographic summary.md \
 
 ### Transcribe
 ```
---model <model>          gpt-4o-transcribe-diarize (default), gpt-4o-transcribe, whisper-1
+--model <model>          Transcription model:
+                         OpenAI: gpt-4o-transcribe-diarize (default), gpt-4o-transcribe, whisper-1
+                         Google: gemini-3
 --language <lang>        Language code (en, es, ru, de, etc.)
 -o, --output <file>      Output VTT file
 ```
